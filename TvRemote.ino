@@ -49,10 +49,10 @@ bool buttonPressed[MACRO_BUTTON_COUNT];
 int recordingButtonId = -1;
 
 struct SavedCommand {
-  uint16_t size,
-  uint64_t value,
-  decode_type_t protocol,
-}
+  uint16_t size;
+  uint64_t value;
+  decode_type_t protocol;
+};
 // Stores commands that are currently being recorded
 SavedCommand commands[COMMANDS_PER_MACRO];
 // A pointer to the position after the final recorded command. Once this is 16, the command array is full.
@@ -93,9 +93,9 @@ void setup() {
 
   // Enable all buttons
   for (int i = 0; i < MACRO_BUTTON_COUNT; i++) {
-    pinMode(buttonPins[i], INPUT);
+    pinMode(MACRO_BUTTON_PINS[i], INPUT);
     Serial.print("Enabling reads on pin ");
-    Serial.println(buttonPins[i]);
+    Serial.println(MACRO_BUTTON_PINS[i]);
   }
 }
 
@@ -118,15 +118,15 @@ void debounceRecordSwitch() {
 
 // Status LED controls
 void setStatus(bool r, bool g, bool b) {
-  digitalWrite(STATUS_LEN_PIN_R, r);
-  digitalWrite(STATUS_LEN_PIN_G, g);
-  digitalWrite(STATUS_LEN_PIN_B, b);
+  digitalWrite(STATUS_LED_PIN_R, r);
+  digitalWrite(STATUS_LED_PIN_G, g);
+  digitalWrite(STATUS_LED_PIN_B, b);
 }
 
 void resetStatus() {
-  digitalWrite(STATUS_LEN_PIN_R, false);
-  digitalWrite(STATUS_LEN_PIN_G, false);
-  digitalWrite(STATUS_LEN_PIN_B, false);
+  digitalWrite(STATUS_LED_PIN_R, false);
+  digitalWrite(STATUS_LED_PIN_G, false);
+  digitalWrite(STATUS_LED_PIN_B, false);
 }
 
 // Logging
@@ -144,11 +144,11 @@ int getPressedButtonIndex() {
   for (int i = 0; i < MACRO_BUTTON_COUNT; i++) {
     // We if multiple buttons are somehow pressed on the same cycle, 
     // all after the first are ignored until the next cycle.
-    if (pressed == -1 && debounced(i) && !buttonPressed[i] && digitalRead(buttonPins[i])) {
+    if (pressed == -1 && debounced(i) && !buttonPressed[i] && digitalRead(MACRO_BUTTON_PINS[i])) {
       debounce(i);
       buttonPressed[i] = true;
       pressed = i;
-    } else if (debounced(i) && !digitalRead(buttonPins[i])) {
+    } else if (debounced(i) && !digitalRead(MACRO_BUTTON_PINS[i])) {
       debounce(i);
       buttonPressed[i] = false;
     }
