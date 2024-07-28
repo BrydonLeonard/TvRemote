@@ -19,8 +19,9 @@ static const int MACRO_BUTTON_PINS[MACRO_BUTTON_COUNT] = {
 
 
 static const uint16_t IR_RECEIVER_BUFFER_SIZE = 1024;
-static const uint8_t IR_RECEIVER_TIMEOUT = 50;
-static const uint8_t IR_RECEIVER_TOLERANCE = 75;  // kTolerance is normally 25%
+static const uint8_t IR_RECEIVER_TIMEOUT = 50; // The minimum pause between two commands
+static const uint8_t IR_MIN_UNKNOWN_SIZE = 12;
+static const uint8_t IR_RECEIVER_TOLERANCE = 50;  // kTolerance is normally 25%
 
 
 static const int STATE_READY_TO_RECORD = 0;
@@ -44,6 +45,8 @@ uint32_t debouncingUntil[MACRO_BUTTON_COUNT];
 uint32_t recordSwitchDebouncingUntil;
 bool buttonPressed[MACRO_BUTTON_COUNT];
 
+// Used to avoid checking all buttons on every cycle while recording
+uint32_t nextButtonScan;
 
 // The button that's currently being recorded.
 int recordingButtonId = -1;
@@ -66,11 +69,11 @@ struct {
 void setup() {
   Serial.begin(115200);
   Serial.println("Started!\n");
+  pinMode(IR_RECEIVER_PIN, INPUT);
 
-  // irrecv.setUnknownThreshold(kMinUnknownSize);
+  irrecv.setUnknownThreshold(IR_MIN_UNKNOWN_SIZE);
   irrecv.setTolerance(IR_RECEIVER_TOLERANCE);  // Override the default tolerance.
   irrecv.enableIRIn();  // Start the IR receiver
-  irrecv.pause(); // Pause until we actually need to read
 
   irsend.begin();
   
@@ -79,7 +82,6 @@ void setup() {
   pinMode(STATUS_LED_PIN_B, OUTPUT);
 
   pinMode(IR_EMITTER_PIN, OUTPUT);
-  pinMode(IR_RECEIVER_PIN, INPUT);
 
   // Enable the mode switch
   pinMode(RECORD_MODE_SWITCH_PIN, INPUT);
@@ -149,24 +151,41 @@ void logState() {
 }
 
 int getPressedButtonIndex() {
-  int pressed = -1;
-  for (int i = 0; i < MACRO_BUTTON_COUNT; i++) {
-    // We if multiple buttons are somehow pressed on the same cycle, 
-    // all after the first are ignored until the next cycle.
-    if (pressed == -1 && debounced(i) && !buttonPressed[i] && digitalRead(MACRO_BUTTON_PINS[i])) {
-      debounce(i);
-      buttonPressed[i] = true;
-      pressed = i;
-    } else if (debounced(i) && !digitalRead(MACRO_BUTTON_PINS[i])) {
-      debounce(i);
-      buttonPressed[i] = false;
+  // We really can't afford to spend time scanning unnecessarily because it messes with the IR 
+  // receiver. As such, when recording, this only checks the button for which we're actively
+  // recording. Other times, we scan all of them.
+  if (recordingButtonId == -1) {
+    int pressed = -1;
+    for (int i = 0; i < MACRO_BUTTON_COUNT; i++) {
+      // We if multiple buttons are somehow pressed on the same cycle, 
+      // all after the first are ignored until the next cycle.
+      if (pressed == -1 && debounced(i) && !buttonPressed[i] && digitalRead(MACRO_BUTTON_PINS[i])) {
+        debounce(i);
+        buttonPressed[i] = true;
+        pressed = i;
+      } else if (debounced(i) && !digitalRead(MACRO_BUTTON_PINS[i])) {
+        debounce(i);
+        buttonPressed[i] = false;
+      }
+    }
+    return pressed;
+  } else {
+    if (debounced(recordingButtonId) && !buttonPressed[recordingButtonId] && digitalRead(MACRO_BUTTON_PINS[recordingButtonId])) {
+      debounce(recordingButtonId);
+      buttonPressed[recordingButtonId] = true;
+      return recordingButtonId;
+    } else if (debounced(recordingButtonId) && !digitalRead(MACRO_BUTTON_PINS[recordingButtonId])) {
+      debounce(recordingButtonId);
+      buttonPressed[recordingButtonId] = false;
     }
   }
-  return pressed;
+
+  return -1;
 }
 
+
+
 void loop() {
-  logState();
   int pressedButtonIndex;
 
   switch (state) {
@@ -181,9 +200,10 @@ void loop() {
       // Button pressed
       pressedButtonIndex = getPressedButtonIndex();
       if (pressedButtonIndex != -1) {
+        Serial.print("Pressed button ");
+        Serial.println(pressedButtonIndex);
         irrecv.resume();
         recordingButtonId = pressedButtonIndex;
-        digitalWrite(STATUS_LED_PIN_R, HIGH);
         state = STATE_RECORDING;
         setStatus(true, false, false);
       }
@@ -217,28 +237,74 @@ void loop() {
           setStatus(false, false, true);
           delay(100);
           setStatus(true, false, false);
+
+          Serial.println("Got command: ");
+          Serial.println(resultToHumanReadableBasic(&results));
+          Serial.print("Size: ");
+          Serial.println(command.size);
+          Serial.print("Value: ");
+          Serial.println(command.value);
+          Serial.print("Protocol: ");
+          Serial.println(command.protocol);
+          Serial.print("Total Length: ");
+          Serial.println(commandPtr);
         }
       }
-    
-      // Switch flipped off
-      if (debounced(RECORD_MODE_SWITCH_INDEX) && !digitalRead(RECORD_MODE_SWITCH_PIN)) {
-        state = STATE_READY_TO_PLAYBACK;
-        debounce(RECORD_MODE_SWITCH_PIN);
-        resetStatus();
-      }
+      yield;
 
       // Recording button pressed again
       pressedButtonIndex = getPressedButtonIndex();
       if (pressedButtonIndex == recordingButtonId) {
         state = STATE_READY_TO_RECORD;
-        recordingButtonId = -1;
 
         memcpy(saveData.savedMacros[recordingButtonId], commands, commandPtr);
         saveData.macroLength[recordingButtonId] = commandPtr;
 
+        
+        Serial.println("To be saved:");
+        for (int i = 0; i < commandPtr; i++) {
+          SavedCommand command = commands[i];
+          Serial.print("Command number: ");
+          Serial.println(i);
+          Serial.print("Size: ");
+          Serial.println(command.size);
+          Serial.print("Value: ");
+          Serial.println(command.value);
+          Serial.print("Protocol: ");
+          Serial.println(command.protocol);
+        }
+
+        Serial.println("Saved");
+        for (int i = 0; i < saveData.macroLength[recordingButtonId]; i++) {
+          SavedCommand command = saveData.savedMacros[recordingButtonId][i];
+          Serial.print("Command number: ");
+          Serial.println(i);
+          Serial.print("Size: ");
+          Serial.println(command.size);
+          Serial.print("Value: ");
+          Serial.println(command.value);
+          Serial.print("Protocol: ");
+          Serial.println(command.protocol);
+        }
+        
+        recordingButtonId = -1;
+
         setStatus(true, true, false);
       }
 
+      yield;
+
+      if (millis() > nextButtonScan) {
+        // Switch flipped off
+        if (debounced(RECORD_MODE_SWITCH_INDEX) && !digitalRead(RECORD_MODE_SWITCH_PIN)) {
+          state = STATE_READY_TO_PLAYBACK;
+          debounce(RECORD_MODE_SWITCH_PIN);
+          resetStatus();
+        }
+
+        nextButtonScan = millis() + 1000;
+      }
+        
       // These are all required if we move to any other state
       if (state != STATE_RECORDING) {
         irrecv.pause();
@@ -260,9 +326,11 @@ void loop() {
       if (pressedButtonIndex != -1) {
         setStatus(false, false, true);
 
-        delay(1000);
+        Serial.print("Playing macro for button ");
+        Serial.println(pressedButtonIndex);
 
         for (int i = 0; i < saveData.macroLength[pressedButtonIndex]; i++) {
+          Serial.println(saveData.savedMacros[pressedButtonIndex][i].value);
           if (!irsend.send(
             saveData.savedMacros[pressedButtonIndex][i].protocol, 
             saveData.savedMacros[pressedButtonIndex][i].value, 
