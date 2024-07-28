@@ -8,19 +8,19 @@
 static const int MACRO_BUTTON_COUNT = 8;
 static const int COMMANDS_PER_MACRO = 16;
 
-static const uint16_t IR_RECEIVER_PIN = 15;
-static const uint16_t IR_EMITTER_PIN = 2;
-static const int STATUS_LED_PIN_R = 36;
-static const int STATUS_LED_PIN_G = 39;
-static const int STATUS_LED_PIN_B = 34;
+static const uint16_t IR_RECEIVER_PIN = 25;
+static const uint16_t IR_EMITTER_PIN = 33;
+static const int STATUS_LED_PIN_R = 32;
+static const int STATUS_LED_PIN_G = 14;
+static const int STATUS_LED_PIN_B = 13;
 static const int MACRO_BUTTON_PINS[MACRO_BUTTON_COUNT] = {
-  13, 12, 14, 22, 26, 25, 33, 32
+  22, 21, 19, 18, 5, 4, 2, 15
 };
 
 
 static const uint16_t IR_RECEIVER_BUFFER_SIZE = 1024;
 static const uint8_t IR_RECEIVER_TIMEOUT = 50;
-static const uint8_t IR_RECEIVER_TOLERANCE = 25;  // kTolerance is normally 25%
+static const uint8_t IR_RECEIVER_TOLERANCE = 75;  // kTolerance is normally 25%
 
 
 static const int STATE_READY_TO_RECORD = 0;
@@ -28,7 +28,7 @@ static const int STATE_RECORDING = 1;
 static const int STATE_READY_TO_PLAYBACK = 2;
 
 static const int RECORD_MODE_SWITCH_INDEX = 0;
-static const int RECORD_MODE_SWITCH_PIN = 4;
+static const int RECORD_MODE_SWITCH_PIN = 23;
 
 static const int DEBOUNCE_DELAY_MS = 50;
 
@@ -63,7 +63,6 @@ struct {
   short macroLength[MACRO_BUTTON_COUNT]; // 0 for unsaved commands
 } saveData;
 
-
 void setup() {
   Serial.begin(115200);
   Serial.println("Started!\n");
@@ -87,6 +86,7 @@ void setup() {
 
   if (digitalRead(RECORD_MODE_SWITCH_PIN)) {
     state = STATE_READY_TO_RECORD;
+    setStatus(true, true, false);
   } else {
     state = STATE_READY_TO_PLAYBACK;
   }
@@ -131,11 +131,20 @@ void resetStatus() {
 
 // Logging
 int logStateNext = 0;
+double maxInput = -1;
 void logState() {
+  double input = analogRead(IR_RECEIVER_PIN);
+  if (input > maxInput) {
+    maxInput = input;
+  }
+  
   if (millis() > logStateNext) {
     Serial.print("State is ");
     Serial.println(state);
+    Serial.print("Max input was ");
+    Serial.println(maxInput);
     logStateNext = millis() + 1000;
+    maxInput = -1;
   }
 }
 
@@ -166,6 +175,7 @@ void loop() {
       if (debounced(RECORD_MODE_SWITCH_INDEX) && !digitalRead(RECORD_MODE_SWITCH_PIN)) {
         state = STATE_READY_TO_PLAYBACK;
         debounce(RECORD_MODE_SWITCH_PIN);
+        resetStatus();
       }
 
       // Button pressed
@@ -182,20 +192,39 @@ void loop() {
     case STATE_RECORDING: 
       // IR command received
       if (irrecv.decode(&results) && commandPtr < 16) {
-        SavedCommand command;
+        Serial.println("I'm here!");
+        // -1 is UNKNOWN. We can't accept any of those because we need the protocol
+        // in order to transmit the command later. Flash the status LED red to show
+        // that something's gone wrong.
+        if (results.decode_type == -1) {
+          setStatus(false, false, false);
+          delay(100);
+          setStatus(true, false, false);
+          delay(100);
+          setStatus(false, false, false);
+          delay(100);
+          setStatus(true, false, false);
+        } else {
+          SavedCommand command;
 
-        command.size = getCorrectedRawLength(&results);
-        command.value = results.command;
-        command.protocol = results.decode_type;
-        commands[commandPtr] = command;
+          command.size = getCorrectedRawLength(&results);
+          command.value = results.command;
+          command.protocol = results.decode_type;
+          commands[commandPtr] = command;
 
-        commandPtr++;
+          commandPtr++;
+
+          setStatus(false, false, true);
+          delay(100);
+          setStatus(true, false, false);
+        }
       }
     
       // Switch flipped off
       if (debounced(RECORD_MODE_SWITCH_INDEX) && !digitalRead(RECORD_MODE_SWITCH_PIN)) {
         state = STATE_READY_TO_PLAYBACK;
         debounce(RECORD_MODE_SWITCH_PIN);
+        resetStatus();
       }
 
       // Recording button pressed again
@@ -206,13 +235,14 @@ void loop() {
 
         memcpy(saveData.savedMacros[recordingButtonId], commands, commandPtr);
         saveData.macroLength[recordingButtonId] = commandPtr;
+
+        setStatus(true, true, false);
       }
 
       // These are all required if we move to any other state
       if (state != STATE_RECORDING) {
         irrecv.pause();
         commandPtr = 0;
-        resetStatus();
       }
       
       break;
@@ -221,12 +251,16 @@ void loop() {
       if (debounced(RECORD_MODE_SWITCH_INDEX) && digitalRead(RECORD_MODE_SWITCH_PIN)) {
         state = STATE_READY_TO_RECORD;
         debounce(RECORD_MODE_SWITCH_PIN);
+
+        setStatus(true, true, false);
       }
 
       // Button pressed
       pressedButtonIndex = getPressedButtonIndex();
       if (pressedButtonIndex != -1) {
-        setStatus(false, true, true);
+        setStatus(false, false, true);
+
+        delay(1000);
 
         for (int i = 0; i < saveData.macroLength[pressedButtonIndex]; i++) {
           if (!irsend.send(
